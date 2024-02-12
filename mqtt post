@@ -1,0 +1,381 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <DHT.h>
+#include <Adafruit_NeoPixel.h>
+
+#define DHTPIN 17    
+#define DHTTYPE DHT22 
+DHT dht(DHTPIN, DHTTYPE);
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+#define PIR_PIN 15   
+#define LED_PIN 5   
+#define NUM_LEDS 30 
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+int RED_MAX = 255;
+int RED_MIN = 0;
+int GREEN_MAX = 255;
+int GREEN_MIN = 0;
+int BLUE_MAX = 255;
+int BLUE_MIN = 0;
+int MAX_BRIGHTNESS = 180;
+int MIN_BRIGHTNESS = 10;
+
+
+#define LIGHT_SENSOR_PIN 4 
+#define LIGHT_SENSOR_PIN2 18
+#define LDR_MIN 600        
+#define LDR_MAX 4095   
+#define LOW_LIGHT_THRESHOLD 2500// Adjust this threshold based on your environment     
+int ldrValue = 500;
+
+#define LDR_MAX_VALUE 4095
+#define LDR_MIN_VALUE 1000
+int minLdrValue = LDR_MAX_VALUE;
+int maxLdrValue = LDR_MIN_VALUE;
+#define COOLING  55
+#define SPARKING 120
+
+unsigned long lightDuration = 5000; 
+unsigned long lastMotionTime = 0; 
+
+bool motion = true;
+bool DebugMode = true; //zobrazovanie vypisov
+bool RandomLdr = true ; 
+enum LightingMode 
+{
+  MODE_NORMAL,     // Normální režim svícení
+  MODE_FIRE,       // Ohnivý efekt
+  MODE_ADAPTIVE    // Adaptivní režim na základě hodnoty LDR
+};
+
+LightingMode lightingMode = MODE_NORMAL; // Nastavte výchozí režim svícení
+
+enum ColorMode
+{
+  COLOR_ADAPTIVE    // Adaptivní režim na základě hodnoty LDR
+};
+
+ColorMode ColorMode = COLOR_ADAPTIVE;
+
+struct LdrValues 
+{
+  int EasyLdr; // definuje ldr od 0 do  255
+  int minLdrValue;
+  int maxLdrValue;
+};
+
+struct ColorValues 
+{
+  int red;
+  int green;
+  int blue;
+};
+// Replace the next variables with your SSID/Password combination
+const char* ssid = "REPLACE_WITH_YOUR_SSID";
+const char* password = "REPLACE_WITH_YOUR_PASSWORD";
+// Add your MQTT Broker IP address, example:
+const char* mqtt_server = "192.168.1.144";
+//const char* mqtt_server = "YOUR_MQTT_BROKER_IP_ADDRESS";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+long lastMsg = 0;
+char msg[50];
+int value = 0;
+
+void setup() 
+{
+  Serial.begin(115200);
+  dht.begin();
+  pinMode(PIR_PIN, INPUT);
+  pinMode(LIGHT_SENSOR_PIN, INPUT);
+  strip.begin();
+  strip.setBrightness(0); //zhasnut led 
+  strip.show();
+  setup_wifi();
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+
+  if (client.connect("ESP8266Client")) 
+  {
+    Serial.println("Connected to MQTT Broker!");
+    
+    // Existing subscription
+    client.subscribe("esp32/output");
+
+    // New subscriptions for max and min values
+    client.subscribe("esp32/maxRed");
+    client.subscribe("esp32/minRed");
+    client.subscribe("esp32/maxGreen");
+    // Add subscriptions for other topics as needed
+  }else 
+  {
+    Serial.println("MQTT connection failed! Check the connection and try again.");
+  }
+
+}
+
+void setup_wifi() {
+  delay(10);
+  // We start by connecting to a WiFi network
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void callback(char* topic, byte* message, unsigned int length) {
+  Serial.print("Message arrived on topic: ");
+  Serial.print(topic);
+  Serial.print(". Message: ");
+  String messageTemp;
+
+  for (int i = 0; i < length; i++) 
+  {
+    Serial.print((char)message[i]);
+    messageTemp += (char)message[i];
+  }
+  Serial.println();
+
+  // Parse the message and update the corresponding variable
+  if (String(topic) == "esp32/maxRed") 
+  {
+    RED_MAX = messageTemp.toInt();
+    Serial.println("Updated MAX Red Value: " + String(RED_MAX));
+  } else if (String(topic) == "esp32/minRed") 
+  {
+    RED_MIN = messageTemp.toInt();
+    Serial.println("Updated MIN Red Value: " + String(RED_MIN));
+  } else if (String(topic) == "esp32/maxGreen") 
+  {
+    GREEN_MAX = messageTemp.toInt();
+    Serial.println("Updated MAX Green Value: " + String(GREEN_MAX));
+  } else if (String(topic) == "esp32/minGreen") 
+  {
+    GREEN_MIN = messageTemp.toInt();
+    Serial.println("Updated MIN Green Value: " + String(GREEN_MIN));
+  } else if (String(topic) == "esp32/maxBlue") 
+  {
+    BLUE_MAX = messageTemp.toInt();
+    Serial.println("Updated MAX Blue Value: " + String(BLUE_MAX));
+  } else if (String(topic) == "esp32/minBlue") 
+  {
+    BLUE_MIN = messageTemp.toInt();
+    Serial.println("Updated MIN Blue Value: " + String(BLUE_MIN));
+  } else if (String(topic) == "esp32/maxBrightness") 
+  {
+    MAX_BRIGHTNESS = messageTemp.toInt();
+    Serial.println("Updated MAX Brightness: " + String(MAX_BRIGHTNESS));
+  } else if (String(topic) == "esp32/minBrightness") 
+  {
+    MIN_BRIGHTNESS = messageTemp.toInt();
+    Serial.println("Updated MIN Brightness: " + String(MIN_BRIGHTNESS));
+  }
+  // Add more else if blocks as needed for other settings
+}
+
+
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) 
+  {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect("ESP8266Client")) 
+    {
+      Serial.println("connected");
+      // Subscribe
+      client.subscribe("esp32/output");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+void loop()
+ {
+   
+    delay(100);
+
+    float humidity = dht.readHumidity();
+    float temperature = dht.readTemperature();
+    
+    if (digitalRead(PIR_PIN) == HIGH) 
+    { 
+        lastMotionTime = millis();  
+        //Serial.println("Motion");
+        motion = true;
+    }
+
+    if (millis() - lastMotionTime > lightDuration && motion)
+    {
+        //motion = false;
+        Serial.println("No Motion");
+        //turnOffLedStrip();
+    }
+
+    if (motion) 
+    { 
+      //aktivuje a aktualizuje led každy ciklus ak je motion true 
+       activateLedStrip();
+    } 
+
+    if (!client.connected()) 
+    {
+        reconnect();
+    }
+    client.loop();
+
+    unsigned long currentMillis = millis();
+    if (currentMillis - lastMsg > 2000) 
+    {
+        lastMsg = currentMillis;
+
+        // Prepare and send temperature and humidity data
+        char temperatureString[8];
+        char humidityString[8];
+        dtostrf(temperature, 1, 2, temperatureString);
+        dtostrf(humidity, 1, 2, humidityString);
+        client.publish("esp32/temperature", temperatureString);
+        client.publish("esp32/humidity", humidityString);
+
+        // Prepare and send EasyLdr value
+        LdrValues ldrValues = readLdrValue();
+        char easyLdrString[8];
+        itoa(ldrValues.EasyLdr, easyLdrString, 10); // Convert int to string
+        client.publish("esp32/easyLdr", easyLdrString);
+    }
+}
+
+void activateLedStrip() 
+{
+   LdrValues ldrValues = readLdrValue();//volanie easyldr a min max
+   ColorValues colors = SetColorMode(); //volanie farieb
+   int Brightness = map(ldrValues.EasyLdr ,0 ,255 ,MIN_BRIGHTNESS ,MAX_BRIGHTNESS);
+
+  if (DebugMode)
+    { //vypisy 
+        Serial.print("EasyLdr: ");
+        Serial.println(ldrValues.EasyLdr);
+        Serial.print("minLdrValue: ");
+        Serial.println(ldrValues.minLdrValue);
+        Serial.print("maxLdrValue: ");
+        Serial.println(ldrValues.maxLdrValue);
+    }  
+
+  switch (lightingMode)
+  {
+    case MODE_NORMAL: 
+    {
+      for (int i = 0; i < NUM_LEDS; i++) 
+      {
+        strip.setPixelColor(i, strip.Color(colors.red, colors.green, colors.blue));
+      }
+       strip.setBrightness(Brightness); // Případně upravte pro nastavení jasu
+       strip.show();
+
+     break;
+    }
+    case MODE_FIRE:// Kód pro ohnivý efekt
+    {
+         
+      break;
+    } 
+
+    case MODE_ADAPTIVE:
+    {   
+
+    }
+  }  
+} 
+ 
+
+
+void turnOffLedStrip() 
+{
+  for (int i = 0; i < NUM_LEDS; i++) 
+  {
+    strip.setPixelColor(i, strip.Color(0, 0, 0));
+  }
+  strip.show();
+}
+
+ColorValues SetColorMode() 
+{
+  ColorValues colors;
+  LdrValues ldrValues = readLdrValue();
+   
+  switch (lightingMode)
+  {
+    case COLOR_ADAPTIVE: 
+    {
+     colors.red = map(ldrValues.EasyLdr, 0, 255, RED_MIN, RED_MAX);
+     colors.green = map(ldrValues.EasyLdr, 0, 255, GREEN_MIN, GREEN_MAX);
+     colors.blue = map(ldrValues.EasyLdr, 0, 255, BLUE_MIN, BLUE_MAX);
+
+     if (DebugMode)
+       { //vypisy 
+         Serial.print("Red: ");
+         Serial.println(colors.red);
+         Serial.print("Green: ");
+         Serial.println(colors.green);
+         Serial.print("Blue: ");
+         Serial.println(colors.blue);
+       }  
+    
+    }
+
+  }
+
+   return colors; // Vrácení struktury s upravenými hodnotami
+} 
+
+LdrValues readLdrValue() 
+{
+  LdrValues values;
+   // Declare ldrValue outside the if-else blocks
+
+  if (RandomLdr) 
+  { 
+    ldrValue = (ldrValue + 10) % 4096; // Increment and cycle the value
+  } else 
+  { 
+    ldrValue = analogRead(LIGHT_SENSOR_PIN); // Real LDR value
+  }
+
+  // Update the global min and max LDR values based on the current reading
+  minLdrValue = min(minLdrValue, ldrValue);
+  maxLdrValue = max(maxLdrValue, ldrValue);
+
+  // Now assign the updated global values to the struct
+  values.minLdrValue = minLdrValue;
+  values.maxLdrValue = maxLdrValue;
+  values.EasyLdr = map(ldrValue, minLdrValue, maxLdrValue, 0, 255);
+
+    // For debugging
+
+  return values; // Return the structure with updated values
+}
