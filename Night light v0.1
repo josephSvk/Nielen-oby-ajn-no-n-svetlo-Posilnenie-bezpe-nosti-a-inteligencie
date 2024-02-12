@@ -1,0 +1,259 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <DHT.h>
+#include <Adafruit_NeoPixel.h>
+#include <FastLED.h>
+
+#define DHTPIN 17    
+#define DHTTYPE DHT22 
+DHT dht(DHTPIN, DHTTYPE);
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+#define PIR_PIN 15   
+#define LED_PIN 5   
+#define NUM_LEDS 30 
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+#define COLOR_ORDER GRB
+#define CHIPSET     WS2812B
+CRGB leds[NUM_LEDS];
+
+#define RED_MIN   10
+#define RED_MAX   255
+#define GREEN_MIN 0
+#define GREEN_MAX 255
+#define BLUE_MIN  0
+#define BLUE_MAX  255
+
+
+#define LIGHT_SENSOR_PIN 4 
+#define LIGHT_SENSOR_PIN2 18
+#define LDR_MIN 600        
+#define LDR_MAX 4095   
+#define LOW_LIGHT_THRESHOLD 2500// Adjust this threshold based on your environment     
+int ldrValue = 500;
+
+#define MIN_BRIGHTNESS 10   // Minimum LED brightness
+#define MAX_BRIGHTNESS 180  // Maximum LED brightness
+#define LDR_MAX_VALUE 4095
+#define LDR_MIN_VALUE 1000
+int minLdrValue = LDR_MAX_VALUE;
+int maxLdrValue = LDR_MIN_VALUE;
+#define COOLING  55
+#define SPARKING 120
+
+unsigned long lightDuration = 5000; 
+unsigned long lastMotionTime = 0; 
+
+bool motion = false;
+bool DebugMode = true; //zobrazovanie vypisov
+bool RandomLdr = true ; 
+enum LightingMode 
+{
+  MODE_NORMAL,     // Normální režim svícení
+  MODE_FIRE,       // Ohnivý efekt
+  MODE_ADAPTIVE    // Adaptivní režim na základě hodnoty LDR
+};
+
+LightingMode lightingMode = MODE_NORMAL; // Nastavte výchozí režim svícení
+
+enum ColorMode
+{
+  COLOR_ADAPTIVE    // Adaptivní režim na základě hodnoty LDR
+};
+
+ColorMode ColorMode = COLOR_ADAPTIVE;
+
+struct LdrValues 
+{
+  int EasyLdr; // definuje ldr od 0 do  255
+  int minLdrValue;
+  int maxLdrValue;
+};
+
+struct ColorValues 
+{
+  int red;
+  int green;
+  int blue;
+};
+
+
+void setup() 
+{
+  Serial.begin(115200);
+  dht.begin();
+  pinMode(PIR_PIN, INPUT);
+  pinMode(LIGHT_SENSOR_PIN, INPUT);
+  strip.begin();
+  strip.setBrightness(0); //zhasnut led 
+  strip.show();
+
+}
+
+void loop()
+ {
+    delay(100);
+
+    float humidity = dht.readHumidity();
+    float temperature = dht.readTemperature();
+    
+    if (digitalRead(PIR_PIN) == HIGH) 
+    { 
+        lastMotionTime = millis();  
+        //Serial.println("Motion");
+        motion = true;
+    }
+
+    if (millis() - lastMotionTime > lightDuration && motion)
+    {
+        //motion = false;
+        Serial.println("No Motion");
+        //turnOffLedStrip();
+    }
+
+    if (motion) 
+    { 
+      //aktivuje a aktualizuje led každy ciklus ak je motion true 
+       activateLedStrip();
+    } 
+}
+
+void activateLedStrip() 
+{
+   LdrValues ldrValues = readLdrValue();//volanie easyldr a min max
+   ColorValues colors = SetColorMode(); //volanie farieb
+   int Brightness = map(ldrValues.EasyLdr ,0 ,255 ,MIN_BRIGHTNESS ,MAX_BRIGHTNESS);
+
+  if (DebugMode)
+    { //vypisy 
+        Serial.print("EasyLdr: ");
+        Serial.println(ldrValues.EasyLdr);
+        Serial.print("minLdrValue: ");
+        Serial.println(ldrValues.minLdrValue);
+        Serial.print("maxLdrValue: ");
+        Serial.println(ldrValues.maxLdrValue);
+    }  
+
+  switch (lightingMode)
+  {
+    case MODE_NORMAL: 
+    {
+      for (int i = 0; i < NUM_LEDS; i++) 
+      {
+        strip.setPixelColor(i, strip.Color(colors.red, colors.green, colors.blue));
+      }
+       strip.setBrightness(Brightness); // Případně upravte pro nastavení jasu
+       strip.show();
+
+     break;
+    }
+    case MODE_FIRE:// Kód pro ohnivý efekt
+    {
+         static byte heat[NUM_LEDS];
+  
+          // Krok 1: Chladneme každou buňku o trochu
+          for (int i = 0; i < NUM_LEDS; i++) 
+          {
+            heat[i] = qsub8(heat[i], random8(0, ((COOLING * 10) / NUM_LEDS) + 2));
+          }
+         // Krok 2: Posun tepla nahoru
+          for (int k = NUM_LEDS - 1; k >= 2; k--) 
+          {
+           heat[k] = (heat[k - 1] + heat[k - 2] + heat[k - 2]) / 3;
+          }
+          // Krok 3: Náhodné jiskření u základny
+          if (random8() < SPARKING) 
+          {
+           int y = random8(7);
+           heat[y] = qadd8(heat[y], random8(160, 255));
+          }
+          // Krok 4: Mapování z 'tepla' na barvy pixelů
+          for (int j = 0; j < NUM_LEDS; j++) 
+          {
+            
+          } 
+          
+      break;
+    } 
+
+    case MODE_ADAPTIVE:
+    {   
+
+    }
+  }  
+} 
+ 
+
+
+void turnOffLedStrip() 
+{
+  for (int i = 0; i < NUM_LEDS; i++) 
+  {
+    strip.setPixelColor(i, strip.Color(0, 0, 0));
+  }
+  strip.show();
+}
+
+ColorValues SetColorMode() 
+{
+  ColorValues colors;
+  LdrValues ldrValues = readLdrValue();
+   
+  switch (lightingMode)
+  {
+    case COLOR_ADAPTIVE: 
+    {
+     colors.red = map(ldrValues.EasyLdr, 0, 255, RED_MIN, RED_MAX);
+     colors.green = map(ldrValues.EasyLdr, 0, 255, GREEN_MIN, GREEN_MAX);
+     colors.blue = map(ldrValues.EasyLdr, 0, 255, BLUE_MIN, BLUE_MAX);
+
+     if (DebugMode)
+       { //vypisy 
+         Serial.print("Red: ");
+         Serial.println(colors.red);
+         Serial.print("Green: ");
+         Serial.println(colors.green);
+         Serial.print("Blue: ");
+         Serial.println(colors.blue);
+       }  
+    
+    }
+
+  }
+
+   return colors; // Vrácení struktury s upravenými hodnotami
+} 
+
+LdrValues readLdrValue() 
+{
+  LdrValues values;
+   // Declare ldrValue outside the if-else blocks
+
+  if (RandomLdr) 
+  { 
+    ldrValue = (ldrValue + 10) % 4096; // Increment and cycle the value
+  } else 
+  { 
+    ldrValue = analogRead(LIGHT_SENSOR_PIN); // Real LDR value
+  }
+
+  // Update the global min and max LDR values based on the current reading
+ // minLdrValue = min(minLdrValue, ldrValue);
+  //maxLdrValue = max(maxLdrValue, ldrValue);
+
+  // Now assign the updated global values to the struct
+  //values.minLdrValue = minLdrValue;
+  //values.maxLdrValue = maxLdrValue;
+  values.minLdrValue = 0;
+  values.maxLdrValue = 4095;
+  values.EasyLdr = map(ldrValue, minLdrValue, maxLdrValue, 0, 255);
+
+    // For debugging
+
+  return values; // Return the structure with updated values
+}
